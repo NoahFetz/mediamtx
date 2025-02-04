@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/sdp/v3"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -56,7 +56,7 @@ func TracksAreValid(medias []*sdp.MediaDescription) error {
 	}
 
 	if !videoTrack && !audioTrack {
-		return fmt.Errorf("no valid tracks count")
+		return fmt.Errorf("no valid tracks found")
 	}
 
 	return nil
@@ -99,6 +99,8 @@ type PeerConnection struct {
 func (co *PeerConnection) Start() error {
 	settingsEngine := webrtc.SettingEngine{}
 
+	settingsEngine.SetIncludeLoopbackCandidate(true)
+
 	settingsEngine.SetInterfaceFilter(func(iface string) bool {
 		return co.IPsFromInterfaces && (len(co.IPsFromInterfacesList) == 0 ||
 			stringInSlice(iface, co.IPsFromInterfacesList))
@@ -107,21 +109,30 @@ func (co *PeerConnection) Start() error {
 	settingsEngine.SetAdditionalHosts(co.AdditionalHosts)
 
 	var networkTypes []webrtc.NetworkType
+	enableUDP := false
 
-	// always enable UDP in order to support STUN/TURN
-	networkTypes = append(networkTypes, webrtc.NetworkTypeUDP4)
+	// UDP is always needed when there's a STUN/TURN server.
+	if len(co.ICEServers) != 0 {
+		enableUDP = true
+	}
 
 	if co.ICEUDPMux != nil {
+		enableUDP = true
 		settingsEngine.SetICEUDPMux(co.ICEUDPMux)
 	}
 
-	if co.ICETCPMux != nil {
-		settingsEngine.SetICETCPMux(co.ICETCPMux)
-		networkTypes = append(networkTypes, webrtc.NetworkTypeTCP4)
+	if co.LocalRandomUDP {
+		enableUDP = true
+		settingsEngine.SetLocalRandomUDP(true)
 	}
 
-	if co.LocalRandomUDP {
-		settingsEngine.SetICEUDPRandom(true)
+	if co.ICETCPMux != nil {
+		networkTypes = append(networkTypes, webrtc.NetworkTypeTCP4)
+		settingsEngine.SetICETCPMux(co.ICETCPMux)
+	}
+
+	if enableUDP {
+		networkTypes = append(networkTypes, webrtc.NetworkTypeUDP4)
 	}
 
 	settingsEngine.SetNetworkTypes(networkTypes)
@@ -234,7 +245,7 @@ func (co *PeerConnection) Start() error {
 			}
 		}
 	} else {
-		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RtpTransceiverInit{
+		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionRecvonly,
 		})
 		if err != nil {
@@ -242,7 +253,7 @@ func (co *PeerConnection) Start() error {
 			return err
 		}
 
-		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RtpTransceiverInit{
+		_, err = co.wr.AddTransceiverFromKind(webrtc.RTPCodecTypeAudio, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionRecvonly,
 		})
 		if err != nil {
@@ -290,6 +301,16 @@ func (co *PeerConnection) Start() error {
 			close(co.failed)
 
 		case webrtc.PeerConnectionStateClosed:
+			// "closed" can arrive before "failed" and without
+			// the Close() method being called at all.
+			// It happens when the other peer sends a termination
+			// message like a DTLS CloseNotify.
+			select {
+			case <-co.failed:
+			default:
+				close(co.failed)
+			}
+
 			close(co.done)
 		}
 	})
