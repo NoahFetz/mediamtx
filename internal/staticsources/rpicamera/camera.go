@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
 
 type camera struct {
@@ -166,7 +166,8 @@ outer:
 				uint64(buf[4])<<24 | uint64(buf[3])<<16 | uint64(buf[2])<<8 | uint64(buf[1])
 			dts := time.Duration(tmp) * time.Microsecond
 
-			nalus, err := h264.AnnexBUnmarshal(buf[9:])
+			var nalus h264.AnnexB
+			err = nalus.Unmarshal(buf[9:])
 			if err != nil {
 				return err
 			}
